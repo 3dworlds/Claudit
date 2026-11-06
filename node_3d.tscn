@@ -4,3 +4,5 @@
 
 [node name="Node3D" type="Node3D" unique_id=1553520312]
 script = ExtResource("1_a202f")
+
+[node name="CanvasLayer" type="CanvasLayer" parent="." unique_id=713041796]
