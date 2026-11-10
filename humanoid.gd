@@ -129,7 +129,7 @@ static func build(parent: Node3D, shirt: Color, pants: Color = PANTS, mono: Colo
 ## Animación procedural: respiración, caminar, saltar, sentarse y aturdido.
 ## Mueve los pivotes de caderas, rodillas y hombros. Cada valor se interpola hacia el objetivo
 ## para que el movimiento sea suave.
-static func animate(root: Node3D, t: float, speed: float, airborne: bool, stunned: bool, seated: bool, delta: float = 0.016) -> void:
+static func animate(root: Node3D, t: float, speed: float, airborne: bool, stunned: bool, seated: bool, delta: float = 0.016, takeoff: float = 0.0) -> void:
 	var k: float = clampf(delta * 12.0, 0.0, 1.0)
 	root.rotation.y = PI
 	var walk: float = clampf(speed / 6.0, 0.0, 1.0)
@@ -152,6 +152,12 @@ static func animate(root: Node3D, t: float, speed: float, airborne: bool, stunne
 		hip_a = -0.4
 		knee_a = 0.6
 		arm_a = -1.1
+	# Despegue: agachado y brazos atrás antes de subir (takeoff va de 0.2 a 0)
+	if takeoff > 0.0:
+		var k2: float = clampf(takeoff / 0.2, 0.0, 1.0)
+		hip_a = lerpf(hip_a, 0.7, k2)
+		knee_a = lerpf(knee_a, 1.1, k2)
+		arm_a = lerpf(arm_a, 1.2, k2)
 	var sw: float = 1.0 if seated else 0.0
 	tilt_x = lerpf(tilt_x, 0.1, sw)
 	var sit_hip: float = -PI * 0.5
@@ -179,3 +185,16 @@ static func animate(root: Node3D, t: float, speed: float, airborne: bool, stunne
 	root.position.y = lerpf(root.position.y, y, k)
 	root.rotation.x = lerpf(root.rotation.x, tilt_x, k)
 	root.rotation.z = lerpf(root.rotation.z, tilt_z, k)
+
+
+## Aplica una textura procedural (tela, metal, carbono...) a todas las piezas del modelo.
+## variant: clave propia de cada personaje, así cada uno tiene un dibujo distinto.
+static func skin_texture(root: Node, tname: String, variant: String) -> void:
+	for child in root.get_children():
+		if child is MeshInstance3D:
+			var mat := (child as MeshInstance3D).material_override as StandardMaterial3D
+			if mat != null:
+				mat.albedo_texture = Textures.get_tex(tname, variant)
+				mat.uv1_scale = Vector3(1.0, 1.0, 1.0)
+		skin_texture(child, tname, variant)
+

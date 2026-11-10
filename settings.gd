@@ -6,9 +6,9 @@ const RESOLUTIONS := [
 	Vector2i(1280, 720), Vector2i(1280, 768), Vector2i(1360, 768), Vector2i(1366, 768),
 	Vector2i(1600, 900), Vector2i(1920, 1080), Vector2i(2560, 1440),
 ]
-const SHADERS := ["Ninguno", "Viñeta", "Retro", "Cálido"]
+const SHADERS := ["Ninguno", "Viñeta", "Retro", "Cálido", "Sepia", "Blanco y negro", "Pixelado", "Negativo", "Cómic", "Ruido de película", "Ondas", "Aberración cromática", "Brillo suave", "Alto contraste", "Glitch", "Bordes", "Vintage", "Neón", "Azul duotono", "Gamma alto", "Escaneo", "Viñeta fuerte", "Rojo cine", "Pastel"]
 const DISPLAY_MODES := ["ventana", "completa", "sin_bordes"]
-const GRAPHICS := ["Bajo", "Medio", "Alto", "RTX (Ultra)"]
+const GRAPHICS := ["Mínimo", "Ultra bajo", "Muy bajo", "Bajo", "Bajo+", "Bajo++", "Medio-", "Medio", "Medio+", "Alto-", "Alto", "Alto+", "Ultra", "RTX", "RTX+", "RTX Extremo", "RTX Ultra", "RTX Ultra+", "RTX Infinito", "RTX Dios", "RTX Cósmico", "RTX Quantum", "RTX Omega", "RTX Legendario", "RTX Mítico", "RTX Divino", "RTX Titan", "RTX Nova", "RTX Máximo", "RTX Absoluto"]
 
 static var player_name: String = ""
 static var first_run_done: bool = false
@@ -16,7 +16,9 @@ static var display_mode: String = "ventana"
 static var resolution: Vector2i = Vector2i(1280, 720)
 static var scale_pct: int = 100
 static var shader_idx: int = 0
-static var graphics_idx: int = 2
+static var graphics_idx: int = 10
+static var time_idx: int = 0
+const TIMES := ["Día", "Atardecer", "Noche", "Amanecer", "Nublado"]
 static var volume_pct: int = 100
 static var sensitivity_pct: int = 100
 
@@ -36,7 +38,8 @@ static func load_all() -> void:
 		resolution = Vector2i(int(r[0]), int(r[1]))
 	scale_pct = clampi(int(d.get("scale", 100)), 50, 100)
 	shader_idx = clampi(int(d.get("shader", 0)), 0, SHADERS.size() - 1)
-	graphics_idx = clampi(int(d.get("graphics", 2)), 0, GRAPHICS.size() - 1)
+	graphics_idx = clampi(int(d.get("graphics", 10)), 0, GRAPHICS.size() - 1)
+	time_idx = clampi(int(d.get("time", 0)), 0, TIMES.size() - 1)
 	volume_pct = clampi(int(d.get("volume", 100)), 0, 100)
 	sensitivity_pct = clampi(int(d.get("sens", 100)), 25, 300)
 
@@ -54,6 +57,7 @@ static func save() -> void:
 		"scale": scale_pct,
 		"shader": shader_idx,
 		"graphics": graphics_idx,
+		"time": time_idx,
 		"volume": volume_pct,
 		"sens": sensitivity_pct,
 	}))
@@ -80,3 +84,25 @@ static func apply() -> void:
 			DisplayServer.window_set_mode(DisplayServer.WINDOW_MODE_WINDOWED)
 			DisplayServer.window_set_flag(DisplayServer.WINDOW_FLAG_BORDERLESS, false)
 			DisplayServer.window_set_size(resolution)
+
+
+## Etiqueta chica arriba a la derecha con la versión de la app (v + application/config/version).
+static func version_badge() -> Control:
+	var pc := PanelContainer.new()
+	pc.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = Color(0, 0, 0, 0.9)
+	sb.set_corner_radius_all(4)
+	sb.set_content_margin_all(4)
+	pc.add_theme_stylebox_override("panel", sb)
+	var l := Label.new()
+	l.text = "v" + str(ProjectSettings.get_setting("application/config/version", ""))
+	l.add_theme_font_size_override("font_size", 12)
+	pc.add_child(l)
+	pc.name = "VersionBadge"
+	pc.set_anchors_preset(Control.PRESET_TOP_RIGHT)
+	pc.grow_horizontal = Control.GROW_DIRECTION_BEGIN
+	pc.offset_right = -8.0
+	pc.offset_top = 8.0
+	return pc
+

@@ -73,6 +73,8 @@ var chat_open: bool = false
 var options_menu: OptionsMenu
 var post_rect: ColorRect
 var world_env: WorldEnvironment
+var sky_mat: ProceduralSkyMaterial
+var sun_node: DirectionalLight3D
 var _chat_lines: Array = []
 var toast_box: VBoxContainer
 var touch_ui: TouchUI
@@ -164,13 +166,15 @@ func _build_lobby() -> void:
 	lobby_root = l
 	l.single_requested.connect(_start_local)
 	l.options_requested.connect(_open_options)
+	l.quit_requested.connect(_ask.bind("¿Seguro que querés salir del juego?", _quit_game))
 	l.host_requested.connect(_host)
 	l.join_requested.connect(_join)
 	l.touch_toggled.connect(_toggle_touch)
 
 
 func _toggle_touch() -> void:
-	touch = not touch
+	# En celular los controles táctiles siempre están activos (si se apagaban, cualquier toque disparaba)
+	touch = true if OS.has_feature("mobile") else not touch
 	lobby.set_touch(touch)
 
 
@@ -296,7 +300,7 @@ func _on_server_disconnected() -> void:
 ## Un cliente avisa que está listo (con su nombre): el servidor le manda el estado del mundo.
 @rpc("any_peer", "reliable")
 func _req_register(pname: String) -> void:
-	if not multiplayer.is_server():
+	if not _is_host():
 		return
 	_welcome(multiplayer.get_remote_sender_id(), pname)
 
@@ -339,7 +343,7 @@ func _announce(msg: String) -> void:
 
 
 func _on_peer_disconnected(id: int) -> void:
-	if not online or not multiplayer.is_server():
+	if not online or not _is_host():
 		return
 	var who: String = "Un jugador"
 	if players.has(id):
@@ -441,6 +445,7 @@ func _build_env() -> void:
 	skym.ground_horizon_color = Color(0.95, 0.4, 0.45)
 	skym.ground_bottom_color = Color(0.1, 0.05, 0.12)
 	env.sky.sky_material = skym
+	sky_mat = skym
 	env.ambient_light_source = Environment.AMBIENT_SOURCE_SKY
 	env.ambient_light_energy = 1.0
 	env.glow_enabled = true
@@ -455,6 +460,7 @@ func _build_env() -> void:
 	var sun := DirectionalLight3D.new()
 	sun.rotation_degrees = Vector3(-50, -30, 0)
 	sun.light_energy = 1.1
+	sun_node = sun
 	sun.shadow_enabled = true
 	add_child(sun)
 	# Luz de relleno desde el otro lado, sin sombras, para que no quede todo oscuro
@@ -510,7 +516,7 @@ func _static_box(size: Vector3, pos: Vector3, rot_deg: Vector3, color: Color = C
 
 ## Solo el host. Cambia de mapa, borra los props y manda el cambio a los clientes.
 func change_map(idx: int) -> void:
-	if not multiplayer.is_server():
+	if not _is_host():
 		toast("Solo el host puede cambiar de mapa")
 		return
 	clear_props()
@@ -668,7 +674,7 @@ func _client_spawn(kind: String, pos: Vector3, rot: Vector3, color: Color, pid: 
 
 
 func request_spawn(kind: String, pos: Vector3, rot: Vector3) -> void:
-	if multiplayer.is_server():
+	if _is_host():
 		spawn_prop(kind, pos, rot)
 	else:
 		_req_spawn.rpc_id(1, kind, pos, rot)
@@ -764,7 +770,7 @@ func clear_props() -> void:
 
 
 func request_clear() -> void:
-	if multiplayer.is_server():
+	if _is_host():
 		clear_props()
 		toast("Escena limpia")
 	else:
@@ -805,7 +811,7 @@ func snap_yaw(r: Vector3) -> Vector3:
 
 ## Al soltar un prop con el Physgun (con snapping activo) lo alinea a la grilla.
 func request_snap(pid: int) -> void:
-	if multiplayer.is_server():
+	if _is_host():
 		server_snap(pid)
 	else:
 		_req_snap.rpc_id(1, pid)
@@ -833,7 +839,7 @@ func server_snap(pid: int) -> void:
 
 ## Lo llama el jugador. En clientes lo manda al servidor.
 func request_act(tool: int, pid: int, pos: Vector3, dir: Vector3) -> void:
-	if multiplayer.is_server():
+	if _is_host():
 		server_act(tool, pid, pos, dir)
 	else:
 		_req_act.rpc_id(1, tool, pid, pos, dir)
@@ -845,6 +851,10 @@ func _req_act(tool: int, pid: int, pos: Vector3, dir: Vector3) -> void:
 
 
 func server_act(tool: int, pid: int, pos: Vector3, dir: Vector3) -> void:
+	if tool == 12:
+		if npcs.npcs.has(pid):
+			npcs.kill(pid)
+		return
 	if tool == 3:
 		explode(pos, 6.0, 40.0)
 		return
@@ -883,28 +893,47 @@ func server_act(tool: int, pid: int, pos: Vector3, dir: Vector3) -> void:
 
 # ---------------------------------------------------------------- Physgun
 
-func request_hold(pid: int, target: Vector3) -> void:
-	if multiplayer.is_server():
-		server_hold(1, pid, target)
+func request_hold(pid: int, target: Vector3, kind: String = "prop") -> void:
+	if _is_host():
+		server_hold(1, pid, target, kind)
 	else:
-		_req_hold.rpc_id(1, pid, target)
+		_req_hold.rpc_id(1, pid, target, kind)
 
 
 @rpc("any_peer", "unreliable")
-func _req_hold(pid: int, target: Vector3) -> void:
-	server_hold(multiplayer.get_remote_sender_id(), pid, target)
+func _req_hold(pid: int, target: Vector3, kind: String) -> void:
+	server_hold(multiplayer.get_remote_sender_id(), pid, target, kind)
 
 
-func server_hold(peer: int, pid: int, target: Vector3) -> void:
+func server_hold(peer: int, pid: int, target: Vector3, kind: String = "prop") -> void:
 	if pid < 0:
 		hold_targets.erase(peer)
 		return
-	hold_targets[peer] = {"pid": pid, "target": target}
+	hold_targets[peer] = {"pid": pid, "target": target, "kind": kind}
 
 
 func _apply_holds() -> void:
 	for peer in hold_targets:
 		var h: Dictionary = hold_targets[peer]
+		var kind: String = str(h.get("kind", "prop"))
+		if kind == "npc":
+			var n: NPC = npcs.npcs.get(h["pid"], null)
+			if is_instance_valid(n):
+				n.held_until = Time.get_ticks_msec() + 150
+				# Sigue el punto de agarre directamente (se mueve siempre, sin salir volando)
+				n.velocity = Vector3.ZERO
+				n.global_position = n.global_position.lerp(h["target"], 0.2)
+			continue
+		if kind == "player":
+			var pl: Player = players.get(h["pid"], null)
+			if is_instance_valid(pl):
+				var step: Vector3 = pl.global_position.lerp(h["target"], 0.2)
+				var owner_id: int = pl.get_multiplayer_authority()
+				if owner_id == multiplayer.get_unique_id():
+					pl.receive_pull_pos(step)
+				else:
+					pl.rpc_id(owner_id, "receive_pull_pos", step)
+			continue
 		var body: RigidBody3D = props.get(h["pid"], null)
 		if not is_instance_valid(body):
 			continue
@@ -914,7 +943,7 @@ func _apply_holds() -> void:
 
 
 func request_freeze(pid: int) -> void:
-	if multiplayer.is_server():
+	if _is_host():
 		server_freeze(pid)
 	else:
 		_req_freeze.rpc_id(1, pid)
@@ -940,7 +969,7 @@ func server_freeze(pid: int) -> void:
 # ---------------------------------------------------------------- Armas
 
 func request_shoot(origin: Vector3, dir: Vector3, weapon: int) -> void:
-	if multiplayer.is_server():
+	if _is_host():
 		server_shoot(1, origin, dir, weapon)
 	else:
 		_req_shoot.rpc_id(1, origin, dir, weapon)
@@ -1050,7 +1079,14 @@ func _damage_player(p: Player, dmg: float) -> void:
 	if owner_id == multiplayer.get_unique_id():
 		p.receive_hit(dmg)
 	else:
-		p.rpc_id(owner_id, "receive_hit", dmg)
+		_hurt_owner.rpc_id(owner_id, owner_id, dmg)
+
+
+## El servidor avisa al dueño del personaje que recibió daño (funciona en PC y en celular).
+@rpc("authority", "reliable")
+func _hurt_owner(pid: int, dmg: float) -> void:
+	if multiplayer.get_unique_id() == pid and local_player != null:
+		local_player.receive_hit(dmg)
 
 
 @rpc("authority", "unreliable")
@@ -1178,7 +1214,7 @@ func _flash(pos: Vector3) -> void:
 # ================================================================ Sincronización de props
 
 func _physics_process(delta: float) -> void:
-	if not multiplayer.is_server():
+	if not _is_host():
 		return
 	_apply_holds()
 	sync_clock += delta
@@ -1210,7 +1246,7 @@ func _sync_props(ids: PackedInt32Array, xforms: Array) -> void:
 # ================================================================ Modos globales
 
 func toggle_gravity() -> void:
-	if not multiplayer.is_server():
+	if not _is_host():
 		toast("Solo el host puede cambiar la gravedad")
 		return
 	gravity_on = not gravity_on
@@ -1231,7 +1267,7 @@ func toggle_slow_mo() -> void:
 
 
 func toggle_freeze_all() -> void:
-	if not multiplayer.is_server():
+	if not _is_host():
 		toast("Solo el host puede congelar todo")
 		return
 	all_frozen = not all_frozen
@@ -1256,7 +1292,7 @@ func _arr_to_v(a: Array) -> Vector3:
 
 
 func save_scene(path: String = SAVE_PATH) -> void:
-	if not multiplayer.is_server():
+	if not _is_host():
 		toast("Solo el host puede guardar")
 		return
 	var items: Array = []
@@ -1281,7 +1317,7 @@ func save_scene(path: String = SAVE_PATH) -> void:
 
 
 func load_scene(path: String = SAVE_PATH) -> void:
-	if not multiplayer.is_server():
+	if not _is_host():
 		toast("Solo el host puede cargar")
 		return
 	if not FileAccess.file_exists(path):
@@ -1739,6 +1775,7 @@ func _on_touch_action(a: String) -> void:
 
 func _build_pause() -> void:
 	pause_root = _make_overlay(hud_layer)
+	pause_root.add_child(Settings.version_badge())
 	var pp := PanelContainer.new()
 	pp.add_theme_stylebox_override("panel", _panel_style(0.96, 22))
 	pause_root.add_child(pp)
@@ -1869,7 +1906,7 @@ func _reset_controls() -> void:
 func _notification(what: int) -> void:
 	if what == NOTIFICATION_WM_GO_BACK_REQUEST:
 		_on_back()
-	elif what == NOTIFICATION_WM_CLOSE_REQUEST:
+	elif what == NOTIFICATION_WM_CLOSE_REQUEST and not OS.has_feature("mobile"):
 		_quit_game()
 
 
@@ -1891,6 +1928,7 @@ func _quit_game() -> void:
 
 
 func _open_pause() -> void:
+	_fit_overlays()
 	var names := PackedStringArray()
 	for pid in players:
 		var np: Player = players[pid]
@@ -2180,7 +2218,7 @@ func _refresh_hotbar() -> void:
 func _on_slot_gui(event: InputEvent, i: int) -> void:
 	if event is InputEventMouseButton:
 		var mb := event as InputEventMouseButton
-		if mb.pressed and mb.button_index == MOUSE_BUTTON_LEFT and local_player != null:
+		if mb.pressed and mb.button_index == MOUSE_BUTTON_LEFT and local_player != null and not touch:
 			local_player.select_slot(i)
 			_refresh_pack_info()
 
@@ -2332,11 +2370,11 @@ func _process(delta: float) -> void:
 	if builder.launched:
 		flags.append("PROBANDO")
 	if online:
-		text += "\n" + ("HOST" if multiplayer.is_server() else "CLIENTE")
+		text += "\n" + ("HOST" if _is_host() else "CLIENTE")
 	if not flags.is_empty():
 		text += "\n" + " · ".join(flags)
 	info_label.get_parent().visible = not lobby_root.visible
-	info_label.text = text
+	info_label.text = "FPS  %d" % Engine.get_frames_per_second()
 
 
 # ================================================================ Input y paneles
@@ -2566,12 +2604,12 @@ func _toggle_freecam_main() -> void:
 func _fit_overlays() -> void:
 	var vs: Vector2 = get_viewport().get_visible_rect().size
 	for root in [pause_root, menu_root, build_root, pack_root, custom_root, help_panel]:
-		if root == null or root.get_child_count() == 0:
+		if root == null:
 			continue
-		var pc := root.get_child(0) as Control
-		if pc == null:
-			continue
-		pc.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT, Control.PRESET_MODE_MINSIZE, 16)
+		for c in root.get_children():
+			if c.name == "VersionBadge" or not (c is Control):
+				continue
+			(c as Control).set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT, Control.PRESET_MODE_MINSIZE, 16)
 
 
 # ================================================================ Música y niveles (pausa)
@@ -2589,7 +2627,7 @@ func _next_music() -> void:
 
 
 func _save_level() -> void:
-	if not multiplayer.is_server():
+	if not _is_host():
 		toast("Solo el host puede guardar niveles")
 		return
 	var p: String = LevelCreator.new_path()
@@ -2598,7 +2636,7 @@ func _save_level() -> void:
 
 
 func _load_last_level() -> void:
-	if not multiplayer.is_server():
+	if not _is_host():
 		toast("Solo el host puede cargar niveles")
 		return
 	var p: String = LevelCreator.last_path()
@@ -2669,7 +2707,7 @@ func _on_chat_submit(t: String) -> void:
 	txt = txt.substr(0, 160)
 	if not online or multiplayer.multiplayer_peer == null:
 		_chat_add(local_player.display_name if local_player != null else "Tú", txt)
-	elif multiplayer.is_server():
+	elif _is_host():
 		_chat_relay(1, txt)
 	else:
 		_chat_send.rpc_id(1, txt)
@@ -2678,7 +2716,7 @@ func _on_chat_submit(t: String) -> void:
 ## Un cliente manda su mensaje al servidor.
 @rpc("any_peer", "reliable")
 func _chat_send(txt: String) -> void:
-	if not multiplayer.is_server():
+	if not _is_host():
 		return
 	_chat_relay(multiplayer.get_remote_sender_id(), txt)
 
@@ -2713,6 +2751,7 @@ func _build_options() -> void:
 	hud_layer.add_child(options_menu)
 	options_menu.changed.connect(_apply_post)
 	options_menu.closed.connect(_sync_mouse)
+	options_menu.edit_touch.connect(_on_edit_touch)
 	if options_menu.first_run:
 		options_menu.open()
 
@@ -2741,6 +2780,7 @@ func _build_post() -> void:
 
 func _apply_post() -> void:
 	_apply_graphics()
+	_apply_time()
 	if post_rect == null:
 		return
 	post_rect.visible = Settings.shader_idx != 0
@@ -2751,6 +2791,8 @@ const POST_SHADER := """
 shader_type canvas_item;
 uniform int mode = 0;
 uniform sampler2D screen_tex : hint_screen_texture, filter_linear_mipmap;
+
+float rnd(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
 
 void fragment() {
 	vec4 c = texture(screen_tex, SCREEN_UV);
@@ -2764,6 +2806,62 @@ void fragment() {
 		c.rgb *= 0.9 + 0.1 * sin(SCREEN_UV.y * 720.0 * 3.14159);
 	} else if (mode == 3) {
 		c.rgb = c.rgb * vec3(1.08, 1.0, 0.88) + vec3(0.02, 0.01, 0.0);
+	} else if (mode == 4) {
+		float g = dot(c.rgb, vec3(0.299, 0.587, 0.114));
+		c.rgb = vec3(g) * vec3(1.07, 0.95, 0.78);
+	} else if (mode == 5) {
+		c.rgb = vec3(dot(c.rgb, vec3(0.299, 0.587, 0.114)));
+	} else if (mode == 6) {
+		vec2 px = floor(SCREEN_UV * vec2(160.0, 90.0)) / vec2(160.0, 90.0);
+		c = texture(screen_tex, px);
+	} else if (mode == 7) {
+		c.rgb = vec3(1.0) - c.rgb;
+	} else if (mode == 8) {
+		vec3 q = floor(c.rgb * 4.0) / 4.0;
+		float e = length(fwidth(SCREEN_UV)) * 200.0;
+		c.rgb = q * (1.0 - smoothstep(0.0, 0.05, e) * 0.5);
+	} else if (mode == 9) {
+		c.rgb += (rnd(SCREEN_UV * 1000.0 + TIME) - 0.5) * 0.15;
+	} else if (mode == 10) {
+		vec2 uv = SCREEN_UV;
+		uv.x += sin(uv.y * 40.0 + TIME * 3.0) * 0.004;
+		c = texture(screen_tex, uv);
+	} else if (mode == 11) {
+		vec2 o = vec2(0.003, 0.0);
+		c.r = texture(screen_tex, SCREEN_UV + o).r;
+		c.b = texture(screen_tex, SCREEN_UV - o).b;
+	} else if (mode == 12) {
+		c.rgb = mix(c.rgb, c.rgb * c.rgb * 1.6, 0.5) + 0.05;
+	} else if (mode == 13) {
+		c.rgb = clamp((c.rgb - vec3(0.5)) * 1.6 + vec3(0.5), 0.0, 1.0);
+	}
+	if (mode == 14) {
+		float s = step(0.98, rnd(vec2(floor(SCREEN_UV.y * 60.0), floor(TIME * 6.0))));
+		c = texture(screen_tex, SCREEN_UV + vec2(s * 0.02, 0.0));
+	} else if (mode == 15) {
+		float e = 1.0 / 1280.0;
+		vec3 a = texture(screen_tex, SCREEN_UV + vec2(e, 0.0)).rgb;
+		vec3 b = texture(screen_tex, SCREEN_UV - vec2(e, 0.0)).rgb;
+		c.rgb = vec3(length(a - b) * 3.0);
+	} else if (mode == 16) {
+		float g = dot(c.rgb, vec3(0.33));
+		c.rgb = mix(c.rgb, vec3(0.9, 0.75, 0.5) * g, 0.5) * vec3(1.0, 0.95, 0.85);
+	} else if (mode == 17) {
+		c.rgb = pow(c.rgb, vec3(1.8)) * 2.2;
+	} else if (mode == 18) {
+		float g = dot(c.rgb, vec3(0.299, 0.587, 0.114));
+		c.rgb = mix(vec3(0.02, 0.05, 0.2), vec3(0.6, 0.9, 1.0), g);
+	} else if (mode == 19) {
+		c.rgb = pow(c.rgb, vec3(0.7));
+	} else if (mode == 20) {
+		c.rgb *= 0.85 + 0.15 * step(0.5, fract(SCREEN_UV.y * 200.0));
+	} else if (mode == 21) {
+		vec2 d = SCREEN_UV - vec2(0.5);
+		c.rgb *= smoothstep(0.7, 0.1, length(d) * 1.8);
+	} else if (mode == 22) {
+		c.rgb = vec3(c.r * 1.2, c.g * 0.85, c.b * 0.75);
+	} else if (mode == 23) {
+		c.rgb = mix(c.rgb, vec3(1.0, 0.85, 0.9), 0.25) + vec3(0.05);
 	}
 	COLOR = c;
 }
@@ -2773,30 +2871,42 @@ void fragment() {
 ## Calidad gráfica: desde Bajo (sin efectos) hasta RTX (Ultra): sombras de oclusión, reflejos,
 ## iluminación global (SDFGI), niebla volumétrica, bloom y ajuste de color.
 ## Requiere el renderizador Forward+ o Mobile; en Compatibility algunos efectos no se ven.
+## Calidad gráfica: 30 niveles, de Mínimo (muy liviano) a RTX Absoluto.
+## Los niveles bajos apagan efectos caros (sombras, oclusión, reflejos, niebla volumétrica) para subir los FPS.
 func _apply_graphics() -> void:
 	if world_env == null or world_env.environment == null:
 		return
 	var e: Environment = world_env.environment
 	var g: int = Settings.graphics_idx
-	e.tonemap_mode = Environment.TONE_MAPPER_ACES if g >= 2 else Environment.TONE_MAPPER_LINEAR
-	e.ssao_enabled = g >= 1
-	e.ssao_radius = 1.2 if g < 3 else 2.0
-	e.ssao_intensity = 1.0 if g < 3 else 1.6
-	e.ssil_enabled = g >= 3
-	e.ssr_enabled = g >= 2
-	e.ssr_max_steps = 64 if g < 3 else 128
-	e.glow_enabled = g >= 1
-	e.glow_intensity = 0.4 + 0.2 * g
-	e.glow_bloom = 0.05 * g
-	e.volumetric_fog_enabled = g >= 2
-	e.volumetric_fog_density = 0.01 * (g - 1)
-	e.sdfgi_enabled = g >= 3
-	e.adjustment_enabled = g >= 3
-	e.adjustment_saturation = 1.12
-	e.adjustment_contrast = 1.06
+	var n: float = float(Settings.GRAPHICS.size() - 1)
+	var t: float = float(g) / n
+	e.tonemap_mode = Environment.TONE_MAPPER_ACES if g >= 12 else Environment.TONE_MAPPER_LINEAR
+	e.ssao_enabled = g >= 3
+	e.ssao_radius = 0.6 + t * 1.4
+	e.ssao_intensity = 0.4 + t * 1.4
+	e.ssil_enabled = g >= 18
+	e.ssr_enabled = g >= 12
+	e.ssr_max_steps = 16 + g * 4
+	e.glow_enabled = g >= 3
+	e.glow_intensity = 0.1 + t * 0.9
+	e.glow_bloom = 0.01 * g
+	e.volumetric_fog_enabled = g >= 14
+	e.volumetric_fog_density = 0.003 * maxf(0.0, float(g - 13))
+	e.sdfgi_enabled = g >= 20
+	e.adjustment_enabled = g >= 10
+	e.adjustment_saturation = 1.0 + t * 0.15
+	e.adjustment_contrast = 1.0 + t * 0.1
+	if sun_node != null:
+		sun_node.shadow_enabled = g >= 3
+	var vp: Viewport = get_viewport()
+	if vp != null:
+		if g < 4:
+			vp.msaa_3d = Viewport.MSAA_DISABLED
+		elif g < 14:
+			vp.msaa_3d = Viewport.MSAA_2X
+		else:
+			vp.msaa_3d = Viewport.MSAA_4X
 
-
-## Pide confirmación antes de una acción que cierra la partida.
 var _confirm_dlg: ConfirmationDialog = null
 var _confirm_cb: Callable = Callable()
 
@@ -2810,3 +2920,46 @@ func _ask(text: String, cb: Callable) -> void:
 	_confirm_cb = cb
 	_confirm_dlg.dialog_text = Lang.t(text)
 	_confirm_dlg.popup_centered()
+
+
+## En single player (sin red) siempre sos el host.
+func _is_host() -> bool:
+	return not online or multiplayer.is_server()
+
+
+## Desde Opciones: entra al modo de edición de los botones táctiles.
+func _on_edit_touch() -> void:
+	if pause_root.visible:
+		_resume()
+	if touch_ui != null:
+		touch_ui.visible = true
+		touch_ui._start_edit()
+	_sync_mouse()
+
+
+## Hora del día: cielo, color del horizonte, intensidad del sol y de la luz de ambiente.
+const TIME_PRESETS := [
+	{"top": Color(0.12, 0.05, 0.25), "hor": Color(0.95, 0.4, 0.45), "sun": 1.1, "rot": -50.0, "amb": 1.0},
+	{"top": Color(0.25, 0.15, 0.35), "hor": Color(1.0, 0.5, 0.2), "sun": 0.7, "rot": -12.0, "amb": 0.8},
+	{"top": Color(0.03, 0.05, 0.12), "hor": Color(0.08, 0.1, 0.2), "sun": 0.12, "rot": -70.0, "amb": 0.25, "fog": Color(0.05, 0.06, 0.12), "energy": 0.3},
+	{"top": Color(0.2, 0.3, 0.5), "hor": Color(0.9, 0.75, 0.6), "sun": 0.8, "rot": -25.0, "amb": 0.9},
+	{"top": Color(0.45, 0.5, 0.55), "hor": Color(0.7, 0.72, 0.75), "sun": 0.35, "rot": -40.0, "amb": 0.9},
+]
+
+func _apply_time() -> void:
+	if sky_mat == null or sun_node == null:
+		return
+	var p: Dictionary = TIME_PRESETS[clampi(Settings.time_idx, 0, TIME_PRESETS.size() - 1)]
+	sky_mat.sky_top_color = p["top"]
+	sky_mat.sky_horizon_color = p["hor"]
+	sky_mat.ground_horizon_color = p["hor"]
+	sky_mat.ground_bottom_color = p["hor"] * 0.5
+	sky_mat.sky_energy_multiplier = p.get("energy", 1.0)
+	if world_env != null and world_env.environment != null:
+		world_env.environment.background_energy_multiplier = p.get("energy", 1.0)
+	sun_node.light_energy = p["sun"]
+	sun_node.rotation_degrees = Vector3(p["rot"], -30.0, 0.0)
+	if world_env != null and world_env.environment != null:
+		world_env.environment.ambient_light_energy = p["amb"]
+		world_env.environment.fog_light_color = p.get("fog", Color(0.7, 0.75, 0.8))
+

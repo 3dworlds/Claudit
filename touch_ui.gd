@@ -34,8 +34,9 @@ const DEFS := [
 	["items", "circle", "Ítems", Vector2(110, 110), "R", "T", 3, 6],
 	["gancho", "circle", "Gancho", Vector2(96, 96), "R", "T", 200, 400],
 	["usar", "circle", "Usar", Vector2(156, 156), "R", "T", 180, 218],
-	["disparar", "circle", "Disparar", Vector2(140, 140), "R", "T", 21, 180],
-	["agachar", "circle", "Agachar", Vector2(100, 100), "R", "B", 2, 0],
+	["disparar", "circle", "Click izq.", Vector2(140, 140), "R", "T", 21, 180],
+	["derecho", "circle", "Click der.", Vector2(96, 96), "R", "B", 110, 0],
+	["agachar", "circle", "Ground slam", Vector2(100, 100), "R", "B", 2, 0],
 	["armas", "up", "Ver armas", Vector2(184, 56), "C", "B", -92, 6],
 	["mas", "circle", "Más", Vector2(96, 96), "C", "T", -48, 16],
 ]
@@ -103,13 +104,16 @@ var _sel: Dictionary = {}
 var _stick_touch: int = -1
 var _btn_touch: Dictionary = {}   # índice de dedo -> Btn
 var _drag: Dictionary = {}        # índice de dedo -> item (modo edición)
+var _hot_panel: PanelContainer
+var _hot_grid: GridContainer
 
 
 func _ready() -> void:
-	layer = 0
+	layer = 100
 	_load()
 	_build_items()
 	_build_more_panel()
+	_build_hot_panel()
 	_build_edit_bar()
 	for it in items:
 		_place(it)
@@ -145,6 +149,52 @@ func _build_items() -> void:
 	_refresh_colors()
 
 
+## Panel "Ver armas": lista el hotbar para elegir el arma.
+func _build_hot_panel() -> void:
+	_hot_panel = PanelContainer.new()
+	_hot_panel.visible = false
+	_hot_panel.add_theme_stylebox_override("panel", _rounded(Color(0.07, 0.08, 0.11, 0.95), 14))
+	add_child(_hot_panel)
+	_hot_grid = GridContainer.new()
+	_hot_grid.columns = 6
+	_hot_grid.add_theme_constant_override("h_separation", 8)
+	_hot_grid.add_theme_constant_override("v_separation", 8)
+	_hot_panel.add_child(_hot_grid)
+
+
+func _toggle_hot() -> void:
+	if _hot_panel.visible:
+		_hot_panel.visible = false
+		return
+	for c in _hot_grid.get_children():
+		c.queue_free()
+	_hot_grid.columns = maxi(1, player.hotbar.size())
+	for i in range(player.hotbar.size()):
+		var b := Button.new()
+		b.text = "%d %s" % [i + 1, _item_name(str(player.hotbar[i])).left(8)]
+		b.custom_minimum_size = Vector2(76, 40)
+		if i == player.slot:
+			b.add_theme_color_override("font_color", Color(0.25, 0.85, 0.95))
+		b.pressed.connect(_pick_slot.bind(i))
+		b.pressed.connect(Sfx.play.bind("click"))
+		_hot_grid.add_child(b)
+	var vs: Vector2 = get_viewport().get_visible_rect().size
+	_hot_panel.position = Vector2(vs.x * 0.5 - float(player.hotbar.size()) * 39.0, vs.y - 120.0)
+	_hot_panel.visible = true
+
+
+func _pick_slot(i: int) -> void:
+	player.select_slot(i)
+	_hot_panel.visible = false
+
+
+func _item_name(id: String) -> String:
+	if id == "":
+		return "—"
+	var k: int = id.find(":")
+	return id.substr(k + 1) if k >= 0 else id
+
+
 func _build_more_panel() -> void:
 	var vs: Vector2 = get_viewport().get_visible_rect().size
 	_more_panel = PanelContainer.new()
@@ -152,10 +202,10 @@ func _build_more_panel() -> void:
 	_more_panel.visible = false
 	add_child(_more_panel)
 	var scroll := ScrollContainer.new()
-	scroll.custom_minimum_size = Vector2(340, minf(vs.y * 0.6, 330.0))
+	scroll.custom_minimum_size = Vector2(vs.x - 40.0, vs.y - 120.0)
 	_more_panel.add_child(scroll)
 	var mg := GridContainer.new()
-	mg.columns = 3
+	mg.columns = 4
 	mg.add_theme_constant_override("h_separation", 8)
 	mg.add_theme_constant_override("v_separation", 8)
 	scroll.add_child(mg)
@@ -173,10 +223,10 @@ func _build_more_panel() -> void:
 		var pair: Array = e
 		var b := Button.new()
 		b.text = Lang.t(str(pair[0]))
-		b.custom_minimum_size = Vector2(106, 46)
+		b.custom_minimum_size = Vector2(vs.x / 4.0 - 30.0, 60)
 		b.pressed.connect(_on_more_entry.bind(str(pair[1])))
 		mg.add_child(b)
-	_more_panel.position = Vector2(vs.x * 0.5 - 170, 110)
+	_more_panel.set_anchors_preset(Control.PRESET_FULL_RECT)
 
 
 func _build_edit_bar() -> void:
@@ -431,21 +481,23 @@ func _btn_down(tag: String) -> void:
 		return
 	if tag == "mas":
 		_more_panel.visible = not _more_panel.visible
+		_more_panel.move_to_front()
 		return
 	if player == null:
+		return
+	if tag == "armas":
+		_toggle_hot()
 		return
 	match tag:
 		"item+": player.cycle_slot(1)
 		"item-": player.cycle_slot(-1)
 		"noclip": player.set_noclip(not player.noclip)
 		"saltar": player.touch_jump = true
-		"agachar": player.touch_crouch = true
-		"usar": player.tool_press()
-		"disparar":
-			if player.is_weapon():
-				player.tool_press()
+		"agachar": player.touch_slam = true
+		"usar": player.toggle_seat()
+		"disparar": player.tool_press()
+		"derecho": player.tool_secondary()
 		"gancho": player.toggle_hook()
-		"armas": player.cycle_weapon(1)
 
 
 func _btn_up(tag: String) -> void:
@@ -453,8 +505,7 @@ func _btn_up(tag: String) -> void:
 		return
 	match tag:
 		"saltar": player.touch_jump = false
-		"agachar": player.touch_crouch = false
-		"usar": player.tool_release()
+		"agachar": player.touch_slam = false
 		"disparar": player.tool_release()
 
 

@@ -5,6 +5,7 @@ extends Control
 
 signal changed
 signal closed
+signal edit_touch
 
 var first_run: bool = false
 var _tab_body: VBoxContainer
@@ -20,6 +21,7 @@ var _panel: PanelContainer
 
 
 func _ready() -> void:
+	add_child(Settings.version_badge())
 	set_anchors_preset(Control.PRESET_FULL_RECT)
 	mouse_filter = Control.MOUSE_FILTER_STOP
 	visible = false
@@ -50,8 +52,9 @@ func _ready() -> void:
 	tabs.add_theme_constant_override("separation", 8)
 	root.add_child(tabs)
 	tabs.add_child(_tab_btn("General", _show_general))
-	if not (OS.has_feature("mobile") or OS.has_feature("web")):
-		tabs.add_child(_tab_btn("Video", _show_video))
+	tabs.add_child(_tab_btn("Video", _show_video))
+	tabs.add_child(_tab_btn("Calidad", _show_quality))
+	tabs.add_child(_tab_btn("Mundo", _show_world))
 
 	_tab_body = VBoxContainer.new()
 	_tab_body.add_theme_constant_override("separation", 10)
@@ -160,6 +163,13 @@ func _show_general() -> void:
 		_video_changed())
 	sh2.add_child(ss)
 
+	if OS.has_feature("mobile"):
+		var eb := Button.new()
+		eb.text = Lang.t("Editar controles táctiles")
+		eb.custom_minimum_size = Vector2(340, 44)
+		eb.pressed.connect(_on_edit_touch_pressed)
+		_tab_body.add_child(eb)
+
 	var note := Label.new()
 	note.text = Lang.t("El idioma se aplica al reiniciar el juego.")
 	note.modulate = Color(1, 1, 1, 0.7)
@@ -168,32 +178,33 @@ func _show_general() -> void:
 
 func _show_video() -> void:
 	_clear()
-	var mh := _row("Modo de pantalla")
-	_mode_opt = OptionButton.new()
-	for t in ["Ventana", "Pantalla completa", "Pantalla completa sin bordes"]:
-		_mode_opt.add_item(Lang.t(t))
-	_mode_opt.selected = Settings.DISPLAY_MODES.find(Settings.display_mode)
-	_mode_opt.custom_minimum_size = Vector2(240, 36)
-	_mode_opt.item_selected.connect(func(i: int) -> void:
-		Settings.display_mode = Settings.DISPLAY_MODES[i]
-		_video_changed())
-	mh.add_child(_mode_opt)
+	if not (OS.has_feature("mobile") or OS.has_feature("web")):
+		var mh := _row("Modo de pantalla")
+		_mode_opt = OptionButton.new()
+		for t in ["Ventana", "Pantalla completa", "Pantalla completa sin bordes"]:
+			_mode_opt.add_item(Lang.t(t))
+		_mode_opt.selected = Settings.DISPLAY_MODES.find(Settings.display_mode)
+		_mode_opt.custom_minimum_size = Vector2(240, 36)
+		_mode_opt.item_selected.connect(func(i: int) -> void:
+			Settings.display_mode = Settings.DISPLAY_MODES[i]
+			_video_changed())
+		mh.add_child(_mode_opt)
 
-	var rh := _row("Resolución")
-	_res_opt = OptionButton.new()
-	for r in Settings.RESOLUTIONS:
-		var rv: Vector2i = r
-		var tag: String = ""
-		if rv.y == 720 or rv.y == 768 or rv.y == 900 or rv.y == 1080 or rv.y == 1440:
-			tag = " (%dp)" % rv.y
-		_res_opt.add_item("%dx%d%s" % [rv.x, rv.y, tag])
-	var ri: int = Settings.RESOLUTIONS.find(Settings.resolution)
-	_res_opt.selected = ri if ri >= 0 else 0
-	_res_opt.custom_minimum_size = Vector2(240, 36)
-	_res_opt.item_selected.connect(func(i: int) -> void:
-		Settings.resolution = Settings.RESOLUTIONS[i]
-		_video_changed())
-	rh.add_child(_res_opt)
+		var rh := _row("Resolución")
+		_res_opt = OptionButton.new()
+		for r in Settings.RESOLUTIONS:
+			var rv: Vector2i = r
+			var tag: String = ""
+			if rv.y == 720 or rv.y == 768 or rv.y == 900 or rv.y == 1080 or rv.y == 1440:
+				tag = " (%dp)" % rv.y
+			_res_opt.add_item("%dx%d%s" % [rv.x, rv.y, tag])
+		var ri: int = Settings.RESOLUTIONS.find(Settings.resolution)
+		_res_opt.selected = ri if ri >= 0 else 0
+		_res_opt.custom_minimum_size = Vector2(240, 36)
+		_res_opt.item_selected.connect(func(i: int) -> void:
+			Settings.resolution = Settings.RESOLUTIONS[i]
+			_video_changed())
+		rh.add_child(_res_opt)
 
 	var sh := _row("Escala de resolución")
 	_scale_slider = HSlider.new()
@@ -211,6 +222,10 @@ func _show_video() -> void:
 	sh.add_child(_scale_slider)
 	sh.add_child(_scale_label)
 
+
+## Pestaña Calidad: calidad gráfica y shaders (disponible en PC y celu).
+func _show_quality() -> void:
+	_clear()
 	var gh := _row("Calidad gráfica")
 	_gfx_opt = OptionButton.new()
 	for g in Settings.GRAPHICS:
@@ -246,3 +261,23 @@ func _bg() -> StyleBoxFlat:
 	sb.set_corner_radius_all(16)
 	sb.set_content_margin_all(22)
 	return sb
+
+
+func _on_edit_touch_pressed() -> void:
+	visible = false
+	edit_touch.emit()
+
+
+func _show_world() -> void:
+	_clear()
+	var th := _row("Hora del día")
+	var to := OptionButton.new()
+	for t in Settings.TIMES:
+		to.add_item(Lang.t(t))
+	to.selected = Settings.time_idx
+	to.custom_minimum_size = Vector2(240, 36)
+	to.item_selected.connect(func(i: int) -> void:
+		Settings.time_idx = i
+		_video_changed())
+	th.add_child(to)
+

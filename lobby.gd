@@ -7,6 +7,8 @@ signal host_requested(player_name: String, online: bool)
 signal join_requested(player_name: String, address: String, port: int)
 signal touch_toggled
 signal options_requested
+signal quit_requested
+var _changelog_panel: PanelContainer
 
 const SAVE_PATH := "user://servers.json"
 const DEFAULT_PORT := 7777
@@ -27,13 +29,13 @@ var add_addr: LineEdit
 var touch_btn: Button
 var saved: Array = []
 var _lan_sig: String = ""
-var _info_time: float = 0.0
 
 
 var _bg: Texture2D = null
 
 
 func _ready() -> void:
+	add_child(Settings.version_badge())
 	mouse_filter = Control.MOUSE_FILTER_IGNORE
 	if ResourceLoader.exists("res://lobby_bg.png"):
 		_bg = load("res://lobby_bg.png") as Texture2D
@@ -98,6 +100,8 @@ func _ready() -> void:
 	main_page.add_child(_btn("Un jugador", _on_single))
 	main_page.add_child(_btn("Multijugador", _show_multi))
 	main_page.add_child(_btn("Opciones", _toggle_options))
+	main_page.add_child(_btn("Novedades", _toggle_changelog))
+	main_page.add_child(_btn("Salir", func() -> void: quit_requested.emit()))
 	touch_btn = _btn("", _on_touch)
 	main_page.add_child(touch_btn)
 	_refresh_touch_text()
@@ -221,6 +225,35 @@ func _map_label() -> String:
 func _build_map_ui(col: VBoxContainer) -> void:
 	_map_btn = _btn(_map_label(), _toggle_map_panel)
 	col.add_child(_map_btn)
+	_changelog_panel = PanelContainer.new()
+	_changelog_panel.visible = false
+	_changelog_panel.set_anchors_preset(Control.PRESET_FULL_RECT)
+	_changelog_panel.add_theme_stylebox_override("panel", _full_bg())
+	add_child(_changelog_panel)
+	var cv := VBoxContainer.new()
+	_changelog_panel.add_child(cv)
+	var ct := Label.new()
+	ct.text = Lang.t("Novedades") + "  " + Changelog.VERSION
+	ct.add_theme_font_size_override("font_size", 28)
+	cv.add_child(ct)
+	var csc := ScrollContainer.new()
+	csc.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	cv.add_child(csc)
+	var cl := VBoxContainer.new()
+	cl.add_theme_constant_override("separation", 10)
+	cl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	csc.add_child(cl)
+	for entry in Changelog.ENTRIES:
+		var hv := Label.new()
+		hv.text = str(entry[0])
+		hv.add_theme_font_size_override("font_size", 22)
+		cl.add_child(hv)
+		for line in entry[1]:
+			var ll := Label.new()
+			ll.text = "• " + Lang.t(str(line))
+			ll.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+			cl.add_child(ll)
+	cv.add_child(_btn("Cerrar", _toggle_changelog))
 	_map_panel = PanelContainer.new()
 	_map_panel.visible = false
 	add_child(_map_panel)
@@ -263,6 +296,10 @@ func _full_bg() -> StyleBoxFlat:
 	sb.bg_color = Color(0.05, 0.06, 0.09, 0.97)
 	sb.set_content_margin_all(40)
 	return sb
+
+
+func _toggle_changelog() -> void:
+	_changelog_panel.visible = not _changelog_panel.visible
 
 
 func _toggle_map_panel() -> void:

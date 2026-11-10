@@ -7,10 +7,15 @@ const KINDS := {
 	"Zombi": {"hp": 80.0, "speed": 3.4, "mode": "chase", "dmg": 10.0, "color": "6b8e4e", "size": 1.0},
 	"Soldado": {"hp": 100.0, "speed": 2.6, "mode": "shoot", "dmg": 8.0, "color": "8a7a5a", "size": 1.0},
 	"Gigante": {"hp": 400.0, "speed": 2.2, "mode": "chase", "dmg": 25.0, "color": "a05050", "size": 1.8},
+	"Policía": {"hp": 120.0, "speed": 3.0, "mode": "shoot", "dmg": 10.0, "color": "2a4a8a", "size": 1.0},
+	"Científico": {"hp": 70.0, "speed": 2.4, "mode": "wander", "color": "d8d8c8", "size": 1.0},
+	"Robot": {"hp": 250.0, "speed": 2.0, "mode": "chase", "dmg": 15.0, "color": "7a8090", "size": 1.2},
+	"Mini": {"hp": 40.0, "speed": 4.0, "mode": "chase", "dmg": 5.0, "color": "f2c14e", "size": 0.7},
 }
 
 var world: Node = null
 var nid: int = 0
+var held_until: int = 0
 var kind: String = "Vagabundo"
 var puppet: bool = false
 var hp: float = 60.0
@@ -60,6 +65,7 @@ func _ready() -> void:
 	var model: Dictionary = Humanoid.build(self, color)
 	(model["root"] as Node3D).scale = Vector3.ONE * m
 	_model_root = model["root"] as Node3D
+	Humanoid.skin_texture(_model_root, "cloth", str(nid))
 
 	_label = Label3D.new()
 	_label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
@@ -124,6 +130,10 @@ func _physics_process(delta: float) -> void:
 		_refresh_label()
 		return
 
+	# Agarrado con la physgun: solo se mueve con el jugador (no hace IA)
+	if Time.get_ticks_msec() < held_until:
+		move_and_slide()
+		return
 	if not is_on_floor():
 		velocity.y -= 9.8 * delta
 	if global_position.y < -80.0:

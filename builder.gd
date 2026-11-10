@@ -743,7 +743,8 @@ func _apply_drive(body: RigidBody3D) -> void:
 			"wing":
 				var wsz: Vector3 = data["size"]
 				var area: float = wsz.x * wsz.z / 4.0
-				var lift: float = clampf(vf, 0.0, 40.0) * WING_LIFT * area
+				# La sustentación depende de la velocidad total (no solo del avance), así no se cae al girar o subir
+				var lift: float = maxf(maxf(vf, speed * 0.6), 0.0) * WING_LIFT * area
 				body.apply_force(gx.basis.y.normalized() * lift, rel)
 				wings += 1
 
@@ -753,6 +754,15 @@ func _apply_drive(body: RigidBody3D) -> void:
 			body.apply_torque(-bas.z.normalized() * d.x * STEER_TORQUE * sqrt(body.mass) * 0.6)
 	if d.z != 0.0 and wings > 0 and vf > 3.0:
 		body.apply_torque(bas.x.normalized() * d.z * PITCH_TORQUE * sqrt(body.mass))
+	# Estabilizador de cabeceo: si la nariz sube demasiado, el avión la vuelve a bajar (evita que se haga la cola para adelante)
+	if wings > 0 and speed > 2.0:
+		var fwd_y: float = clampf(-bas.z.normalized().y, -1.0, 1.0)
+		var pitch_angle: float = asin(fwd_y)
+		var ax_pitch: Vector3 = bas.x.normalized()
+		body.apply_torque(ax_pitch * (-pitch_angle * 40.0 - body.angular_velocity.dot(ax_pitch) * 6.0) * sqrt(body.mass))
+	# Ayuda de vuelo: con alas, la gravedad pesa menos en el aire (no se cae sin motivo)
+	if wings > 0 and speed > 4.0:
+		body.apply_central_force(Vector3.UP * body.mass * 9.8 * 0.25)
 	if wings > 0 and wl < -1000.0:
 		body.angular_damp = 2.0
 		body.linear_damp = 0.05

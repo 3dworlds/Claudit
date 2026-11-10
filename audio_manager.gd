@@ -27,9 +27,9 @@ func _scan() -> Array:
 	if d == null:
 		return out
 	for f in d.get_files():
-		var name: String = str(f)
-		if name.ends_with(".ogg") or name.ends_with(".mp3") or name.ends_with(".wav"):
-			out.append(MUSIC_DIR + "/" + name)
+		var fname: String = str(f)
+		if fname.ends_with(".ogg") or fname.ends_with(".mp3") or fname.ends_with(".wav"):
+			out.append(MUSIC_DIR + "/" + fname)
 	out.sort()
 	return out
 

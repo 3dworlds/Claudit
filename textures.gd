@@ -29,6 +29,12 @@ static func apply(mat: StandardMaterial3D, tname: String, tile: float = 0.5, var
 	mat.albedo_texture = tex
 	mat.uv1_triplanar = true
 	mat.uv1_scale = Vector3(tile, tile, tile)
+	if tname == "neon":
+		# El neón emite luz (se ve brillar con el Glow de la calidad gráfica)
+		mat.emission_enabled = true
+		mat.emission_texture = tex
+		mat.emission = mat.albedo_color
+		mat.emission_energy_multiplier = 2.0
 	if tname == "metal" or tname == "carbon":
 		mat.metallic = 0.5
 		mat.roughness = 0.45

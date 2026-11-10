@@ -50,6 +50,7 @@ var hooked: bool = false
 var hook_point: Vector3 = Vector3.ZERO
 
 var held_pid: int = -1
+var held_kind: String = "prop"
 var hold_distance: float = 4.0
 var move_sid: int = -1
 var move_dist: float = 6.0
@@ -72,6 +73,7 @@ var _whip_end: Vector3 = Vector3.ZERO
 var _firing: bool = false
 var freecam: bool = false
 var touch_crouch: bool = false
+var touch_slam: bool = false
 var _bhop_buffer: float = 0.0
 var _bhop_landed: bool = false
 var _zap_until: int = 0
@@ -84,6 +86,14 @@ var _gun_body: Node3D = null
 var _slam_active: bool = false
 var _slam_cd: float = 0.0
 var _mg_next_ms: int = 0
+var _fall_v: float = 0.0
+var _prev_air: bool = false
+var _jump_t: float = 0.0
+var _was_floor: bool = true
+var _crush_cd: float = 0.0
+var _slam_hit: bool = false
+var _pull: Vector3 = Vector3.ZERO
+var _recoil: float = 0.0
 var _anim_last: Vector3 = Vector3.ZERO
 var _anim_speed: float = 0.0
 var shock_immune: float = 0.0
@@ -98,6 +108,8 @@ var auto_fire: bool = false
 
 func _ready() -> void:
 	var mine: bool = is_multiplayer_authority()
+	_net_target = global_position
+	_net_yaw = rotation.y
 	builder = world.builder
 	hotbar = Content.default_hotbar()
 
@@ -114,6 +126,7 @@ func _ready() -> void:
 	body_mesh = model["torso"] as MeshInstance3D
 	(model["root"] as Node3D).visible = not mine
 	_model_root = model["root"] as Node3D
+	Humanoid.skin_texture(_model_root, "cloth", str(get_multiplayer_authority()))
 
 	name_tag = Label3D.new()
 	name_tag.billboard = BaseMaterial3D.BILLBOARD_ENABLED
@@ -151,9 +164,10 @@ func _ready() -> void:
 	var sync := MultiplayerSynchronizer.new()
 	sync.root_path = NodePath("..")
 	var cfg := SceneReplicationConfig.new()
-	for p in [":position", ":rotation", ":hp", ":hooked", ":hook_point", ":display_name", ":seat_sid"]:
+	for p in [":hooked", ":hook_point", ":display_name", ":seat_sid"]:
 		cfg.add_property(NodePath(p))
 	sync.replication_config = cfg
+	sync.name = "Sync"  # nombre fijo: igual en todos los PCs
 	add_child(sync)
 
 	_layer = collision_layer
@@ -229,6 +243,16 @@ func cycle_slot(dir: int) -> void:
 	select_slot(slot + dir)
 
 
+## Cambia al siguiente arma del hotbar (botón "Ver armas").
+func cycle_weapon(dir: int) -> void:
+	for k in range(1, SLOTS + 1):
+		var i: int = wrapi(slot + dir * k, 0, SLOTS)
+		if str(hotbar[i]).begins_with("w:"):
+			select_slot(i)
+			return
+	notify.emit("No tenés armas en el hotbar")
+
+
 func _reset_actions() -> void:
 	_firing = false
 	move_sid = -1
@@ -239,12 +263,53 @@ func _reset_actions() -> void:
 
 # ================================================================ Efectos y daño
 
+var _net_target: Vector3 = Vector3.ZERO
+var _net_yaw: float = 0.0
+var _net_t: float = 0.0
+var _net_hp: float = 100.0
+var _net_spd: float = 0.0
+var _net_air: bool = false
+var _net_stun: bool = false
+var _net_seat: bool = false
+
+
+## Posición y giro enviados por el dueño del personaje a todos (sin depender de MultiplayerSynchronizer).
+@rpc("authority", "unreliable")
+func _net_state(pos: Vector3, yaw: float, hp_v: float, spd: float, air: bool, stun: bool, seat: bool) -> void:
+	_net_target = pos
+	_net_yaw = yaw
+	_net_hp = hp_v
+	_net_spd = spd
+	_net_air = air
+	_net_stun = stun
+	_net_seat = seat
+
+
 func _process(delta: float) -> void:
+	if is_multiplayer_authority():
+		_net_t -= delta
+		if _net_t <= 0.0 and multiplayer.multiplayer_peer != null and multiplayer.get_peers().size() > 0:
+			_net_t = 0.05
+			_net_state.rpc(global_position, rotation.y, hp, _anim_speed, not is_on_floor(), stun_time > 0.0, seat_sid >= 0)
+	else:
+		global_position = global_position.lerp(_net_target, minf(1.0, 14.0 * delta))
+		rotation.y = lerp_angle(rotation.y, _net_yaw, minf(1.0, 12.0 * delta))
+		hp = _net_hp
+		_anim_speed = _net_spd
 	_sync_gun()
+	_animate_gun(delta)
 	_anim_speed = (global_position - _anim_last).length() / maxf(delta, 0.001)
 	_anim_last = global_position
+	var air_now: bool = (not is_on_floor()) if is_multiplayer_authority() else _net_air
+	if air_now and not _prev_air:
+		_jump_t = 0.2
+	_prev_air = air_now
+	_jump_t = maxf(0.0, _jump_t - delta)
 	if _model_root != null:
-		Humanoid.animate(_model_root, Time.get_ticks_msec() / 1000.0, _anim_speed, not is_on_floor(), stun_time > 0.0, seat_sid >= 0, delta)
+		var air: bool = air_now
+		var stn: bool = (stun_time > 0.0) if is_multiplayer_authority() else _net_stun
+		var seated: bool = (seat_sid >= 0) if is_multiplayer_authority() else _net_seat
+		Humanoid.animate(_model_root, Time.get_ticks_msec() / 1000.0, _anim_speed, air, stn, seated, delta, _jump_t)
 	if shake > 0.0:
 		camera.h_offset = randf_range(-1.0, 1.0) * shake * 0.1
 		camera.v_offset = randf_range(-1.0, 1.0) * shake * 0.1
@@ -257,7 +322,9 @@ func _process(delta: float) -> void:
 		name_tag.text = display_name
 	_whip_flash = maxf(0.0, _whip_flash - delta)
 	# el esqueleto se ve en los demás (a vos no te lo mostramos en primera persona)
-	if stun_time > 0.0:
+	# Los demás ven la descarga por la señal de red (_net_stun); el dueño la ve por su propio stun
+	var stunned_now: bool = (stun_time > 0.0) if is_multiplayer_authority() else _net_stun
+	if stunned_now:
 		_zap_until = Time.get_ticks_msec() + 250
 	var show_bones: bool = Time.get_ticks_msec() < _zap_until
 	if show_bones and _bones == null:
@@ -268,7 +335,7 @@ func _process(delta: float) -> void:
 	if _bones != null and show_bones:
 		Player.update_zap(_bones)
 	if _model_root != null:
-		_model_root.visible = (not show_bones) and ((not is_multiplayer_authority()) or freecam or seat_sid >= 0)
+		_model_root.visible = (not show_bones) and ((not is_multiplayer_authority()) or freecam or (seat_sid >= 0 and stun_time > 0.0))
 	_update_rope()
 
 
@@ -301,8 +368,10 @@ func receive_hit(dmg: float) -> void:
 	_armor_delay = 5.0
 	hp = maxf(0.0, hp - (dmg - blocked))
 	if hp <= 0.0:
+		# Al morir la vida y la armadura vuelven al máximo (no queda daño acumulado)
 		hp = MAX_HP
 		armor = 100.0
+		_armor_delay = 0.0
 		_stand_up()
 		_release_hook()
 		velocity = Vector3.ZERO
@@ -364,7 +433,7 @@ func _unhandled_input(event: InputEvent) -> void:
 
 	elif event is InputEventMouseButton:
 		var b := event as InputEventMouseButton
-		if b.button_index == MOUSE_BUTTON_LEFT:
+		if b.button_index == MOUSE_BUTTON_LEFT and not touch_mode:
 			if b.pressed:
 				tool_press()
 			else:
@@ -454,6 +523,7 @@ func _raycast(dist: float = 100.0) -> Dictionary:
 	var to: Vector3 = from - camera.global_transform.basis.z * dist
 	var query := PhysicsRayQueryParameters3D.create(from, to)
 	query.exclude = [get_rid()]
+	query.collision_mask = 0xFFFFFFFF
 	return get_world_3d().direct_space_state.intersect_ray(query)
 
 
@@ -471,13 +541,23 @@ func _aim_point(dist: float) -> Vector3:
 
 func _start_hold() -> void:
 	var hit: Dictionary = _raycast()
-	var body: RigidBody3D = _hit_prop(hit)
-	if body == null:
-		return
-	var pid: int = int(body.get_meta("pid", -1))
-	if pid < 0:
-		return
-	held_pid = pid
+	var col: Object = hit.get("collider") if not hit.is_empty() else null
+	if col is NPC:
+		held_pid = (col as NPC).nid
+		held_kind = "npc"
+	elif col is Player and col != self:
+		held_pid = (col as Player).get_multiplayer_authority()
+		held_kind = "player"
+	else:
+		var body: RigidBody3D = _hit_prop(hit)
+		if body == null:
+			notify.emit("Physgun: no hay nada para agarrar ahí")
+			return
+		var pid: int = int(body.get_meta("pid", -1))
+		if pid < 0:
+			return
+		held_pid = pid
+		held_kind = "prop"
 	var p: Vector3 = hit["position"]
 	hold_distance = camera.global_position.distance_to(p)
 
@@ -485,7 +565,7 @@ func _start_hold() -> void:
 func _update_held() -> void:
 	if held_pid < 0:
 		return
-	world.request_hold(held_pid, _aim_point(hold_distance))
+	world.request_hold(held_pid, _aim_point(hold_distance), held_kind)
 
 
 func _freeze_held() -> void:
@@ -496,7 +576,7 @@ func _freeze_held() -> void:
 
 func release() -> void:
 	if held_pid >= 0 and world != null:
-		world.request_hold(-1, Vector3.ZERO)
+		world.request_hold(-1, Vector3.ZERO, held_kind)
 	held_pid = -1
 
 
@@ -628,7 +708,12 @@ func _rotate_struct() -> void:
 # ---------------------------------------------------------------- Editar bloques (escalar, rotar, pintar, copiar, borrar)
 
 func _edit_click(id: String, secondary: bool) -> void:
-	var hit: Dictionary = _raycast(60.0)
+	var hit0: Dictionary = _raycast(120.0)
+	var col0: Object = hit0.get("collider") if not hit0.is_empty() else null
+	if col0 is NPC and id == "delete":
+		world.request_act(12, (col0 as NPC).nid, hit0["position"], -camera.global_transform.basis.z)
+		return
+	var hit: Dictionary = _raycast(120.0)
 	var body: RigidBody3D = _hit_prop(hit)
 	if body == null:
 		return
@@ -740,6 +825,17 @@ func _use_util(id: String) -> void:
 
 # ---------------------------------------------------------------- Armas (cada arma es su propio ítem)
 
+## El servidor mueve al jugador agarrado con la physgun (lo aplica el dueño y se sincroniza).
+@rpc("any_peer", "unreliable")
+func receive_pull_pos(p: Vector3) -> void:
+	global_position = p
+	velocity = Vector3.ZERO
+
+
+func receive_pull(v: Vector3) -> void:
+	_pull = v
+
+
 func _shoot_once() -> void:
 	if _shoot_cd > 0.0 or not is_weapon():
 		return
@@ -831,15 +927,15 @@ func _hand_pos() -> Vector3:
 
 func _update_rope() -> void:
 	var end: Vector3 = Vector3.ZERO
-	var show: bool = false
+	var show_rope: bool = false
 	if hooked:
 		end = hook_point
-		show = true
+		show_rope = true
 	elif _whip_flash > 0.0:
 		end = _whip_end
-		show = true
-	rope.visible = show
-	if show:
+		show_rope = true
+	rope.visible = show_rope
+	if show_rope:
 		build_bolt(rope.mesh as ImmediateMesh, _hand_pos(), end, 0.0, Color(0.95, 0.85, 0.4))
 
 
@@ -902,6 +998,11 @@ func _seated_tick(arrows: bool = false) -> void:
 	if _key(kl): s -= 1.0
 	if _key(Controls.k(4)): v += 1.0
 	if _key(Controls.k(5)): v -= 1.0
+	# Mouse: apuntar arriba sube el avión, apuntar abajo lo baja
+	if not freecam:
+		var aim: float = camera.rotation.x
+		if absf(aim) > 0.12:
+			v += clampf((aim - signf(aim) * 0.12) * 0.5, -0.4, 0.4)
 	f -= touch_move.y
 	s += touch_move.x
 	if touch_jump:
@@ -941,8 +1042,9 @@ func _physics_process(delta: float) -> void:
 
 	# Ground slam: en el aire, agacharse (o bajar) te tira al piso con una onda expansiva
 	_slam_cd = maxf(0.0, _slam_cd - delta)
-	if seat_sid < 0 and not noclip and not is_on_floor() and not _slam_active and _slam_cd <= 0.0 and (_key(Controls.k(5)) or touch_crouch):
+	if seat_sid < 0 and not noclip and not is_on_floor() and not _slam_active and _slam_cd <= 0.0 and (_key(Controls.k(5)) or touch_crouch or touch_slam):
 		_slam_active = true
+		_slam_hit = true
 		velocity.x = 0.0
 		velocity.z = 0.0
 		velocity.y = -35.0
@@ -1036,8 +1138,10 @@ func _walk(delta: float, arrows: bool = false) -> void:
 		# En el aire no frenás la velocidad que traés; sólo tenés control suave
 		velocity.x = move_toward(velocity.x, wish.x * speed, speed * 2.0 * delta)
 		velocity.z = move_toward(velocity.z, wish.z * speed, speed * 2.0 * delta)
+	var pre_vy: float = velocity.y
 	move_and_slide()
 	_push_props()
+	_after_move(delta, pre_vy)
 
 
 func _toggle_noclip() -> void:
@@ -1335,6 +1439,8 @@ func _freecam_move(delta: float) -> void:
 ## Muestra el arma equipada: en primera persona (cámara) y en la mano del cuerpo.
 func _sync_gun() -> void:
 	var nm: String = item_id().substr(2) if is_weapon() else ""
+	if item_id() == "physgun":
+		nm = "Physgun"
 	if nm == _gun_name:
 		return
 	_gun_name = nm
@@ -1350,7 +1456,7 @@ func _sync_gun() -> void:
 	camera.add_child(_gun_view)
 	_gun_view.position = Vector3(0.28, -0.26, -0.55)
 	_gun_view.rotation.y = PI
-	_gun_view.scale = Vector3.ONE * 1.3
+	_gun_view.scale = Vector3.ONE * 0.8
 	_gun_view.visible = is_multiplayer_authority()
 	if _model_root != null:
 		var arms: Array = _model_root.get_meta("arms", [])
@@ -1362,6 +1468,7 @@ func _sync_gun() -> void:
 
 ## Destello en la punta del arma: un brillo corto y una luz que se apaga enseguida.
 func _muzzle_flash(col: Color) -> void:
+	_recoil = 1.0
 	for host in [_gun_view, _gun_body]:
 		if host == null or not is_instance_valid(host):
 			continue
@@ -1407,3 +1514,46 @@ static func _splash_mesh(s: float) -> ImmediateMesh:
 		im.surface_add_vertex(Vector3(cos(a1) * r1, sin(a1) * r1, 0.0))
 	im.surface_end()
 	return im
+
+
+## Animación del arma en primera persona: retroceso al disparar y balanceo al caminar.
+func _animate_gun(delta: float) -> void:
+	_recoil = maxf(0.0, _recoil - delta * 9.0)
+	if _gun_view == null or not is_instance_valid(_gun_view):
+		return
+	var t: float = Time.get_ticks_msec() / 1000.0
+	var moving: float = clampf(Vector2(velocity.x, velocity.z).length() / 6.0, 0.0, 1.0)
+	var bob: Vector3 = Vector3(sin(t * 7.0) * 0.012, absf(sin(t * 7.0)) * 0.012, 0.0) * moving
+	_gun_view.position = Vector3(0.28, -0.26, -0.55) + bob + Vector3(0.0, 0.0, _recoil * 0.14)
+	_gun_view.rotation = Vector3(_recoil * 0.3, PI, 0.0)
+
+
+## Daño por caída (solo desde cierta altura) y por ser aplastado por objetos pesados que caen o se mueven rápido.
+func _after_move(delta: float, pre_vy: float) -> void:
+	_crush_cd = maxf(0.0, _crush_cd - delta)
+	if _pull.length() > 0.01:
+		# Solo empuje horizontal y con tope: nunca hacia arriba
+		var hp: Vector3 = Vector3(_pull.x, 0.0, _pull.z)
+		velocity += hp * delta * 12.0
+		var hv: Vector3 = Vector3(velocity.x, 0.0, velocity.z).limit_length(8.0)
+		velocity.x = hv.x
+		velocity.z = hv.z
+		_pull = _pull.lerp(Vector3.ZERO, minf(1.0, delta * 8.0))
+	if is_on_floor():
+		if not _was_floor and _fall_v < -12.0 and not _slam_hit:
+			receive_hit(clampf((-_fall_v - 12.0) * 3.0, 0.0, 80.0))
+		_slam_hit = false
+		_fall_v = 0.0
+	elif pre_vy < 0.0:
+		_fall_v = minf(_fall_v, pre_vy)
+	_was_floor = is_on_floor()
+	if _crush_cd <= 0.0:
+		for i in get_slide_collision_count():
+			var rb := get_slide_collision(i).get_collider() as RigidBody3D
+			if rb != null:
+				var s: float = rb.linear_velocity.length()
+				if s > 6.0:
+					receive_hit(clampf(s * 2.0, 0.0, 40.0))
+					_crush_cd = 0.4
+					break
+
